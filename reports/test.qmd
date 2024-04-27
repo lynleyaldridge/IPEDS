@@ -1,0 +1,64 @@
+---
+title: "test"
+format: html
+---
+
+```{r}
+
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(tidyverse,
+               here,
+               DBI,
+               odbc,
+               RODBC
+               )
+
+# p_unlock("xfun")
+# install.packages("xfun", type = "binary")
+
+```
+
+```{r}
+# connection <- dbConnect(odbc(), .connection_string = "Driver={Microsoft Access Driver (*.mdb, *.accdb)};Dbq=", file.path(here("data", "IPEDS200405.accdb"), ";"))
+#                         
+# df1 <- dbReadTable(connection , "G_Company")
+```
+
+```{r}
+
+# specify Access database to import data from 
+db <- file.path(here("data", "IPEDS200405.accdb"))
+
+# open ODBC connection to database
+channel <- odbcConnectAccess2007(db)
+
+# import tables
+
+dictionary <- sqlFetch(channel, "Vartable22")
+
+
+
+## Set up driver info and database path
+DRIVERINFO <- "Driver={Microsoft Access Driver (*.mdb, *.accdb)};"
+MDBPATH <- file.path(here("data", "IPEDS200405.accdb"))
+PATH <- paste0(DRIVERINFO, "DBQ=", MDBPATH)
+
+## Establish connection
+channel <- odbcDriverConnect(PATH)
+
+sqlTables(channel, tableType = "TABLE")$TABLE_NAME
+
+```
+
+```{r}
+db <- "C:/Users/lynle/Documents/Emory/data/IPEDS200405.accdb"
+ con2 <- odbcConnectAccess2007(db)
+```
+
+```{r}
+# alternative from: https://rpubs.com/vermanica/SQL_finalProject_MicrosoftAccess
+# note that we set up a connection here via windows control panel odbc settings directly to relevant file (saved in this folder)
+con <- odbcConnect("IPEDS")
+
+```

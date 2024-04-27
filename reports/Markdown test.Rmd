@@ -1,0 +1,42 @@
+---
+title: "Test database"
+author: "Lynley Aldridge"
+date: "2024-04-18"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+```{r library}
+
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(tidyverse,
+               readxl,
+               here,
+               haven,
+               labelled,
+               RODBC,
+               gt,
+               glue,
+               scales,
+               sjPlot,
+               janitor,
+               vtable,
+               GGally)
+
+```
+
+### Load data
+
+```{r}
+
+# set up database connection
+
+# Access file downloaded from: https://nces.ed.gov/ipeds/use-the-data/download-access-database
+
+IPEDSDatabase <- odbcConnectAccess2007(here("data", "IPEDS202223.accdb"))
+
+```

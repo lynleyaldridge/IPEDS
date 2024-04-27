@@ -1,0 +1,872 @@
+---
+title: "IPEDS Data Feedback Report: Custom Comparisons"
+
+format:
+  html:
+    code-fold: true
+    
+warning: false
+    
+params: 
+  focus: 139658
+  institution: "Emory University"
+---
+
+# Introduction
+
+This report explores staff by category and average salary data for `r params$institution`. After presenting comparisons on these variables for the custom comparison group included in the IPEDS Data Feedback Report for 2022, I present more detailed comparisons with other institutions on these metrics.
+
+Code chunks for setup are presented below under relevant headings for ease of report generation, they will be removed in the final version.
+
+### Setup
+
+```{r setup}
+
+
+```
+
+### Load packages
+
+```{r library}
+
+if (!require("pacman")) install.packages("pacman")
+
+pacman::p_load(tidyverse,
+               readxl,
+               here,
+               haven,
+               labelled,
+               RODBC,
+               gt,
+               glue,
+               scales,
+               sjPlot,
+               janitor,
+               vtable,
+               GGally)
+
+```
+
+### Load data
+
+```{r data}
+ 
+# set up database connection
+# Access file downloaded from: https://nces.ed.gov/ipeds/use-the-data/download-access-database
+IPEDSDatabase <- odbcConnectAccess2007(here("data", "IPEDS202223.accdb"))
+
+# create dictionary labels (variable labels)
+dictionary <-  sqlFetch(IPEDSDatabase, "vartable22")
+
+dict_labels <- dictionary %>%
+  select(varName, varTitle) %>%
+  deframe() %>%
+  as.list()
+
+# import value labels for reference
+
+value_labels_raw <-  sqlFetch(IPEDSDatabase, "valuesets22")
+
+value_labels <-  sqlFetch(IPEDSDatabase, "valuesets22") %>%
+  filter(TableName == "HD2022",
+         varName %in% c( 
+         "OBEREG",
+         "CONTROL",
+         "HBCU",
+         "HOSPITAL",
+         "MEDICAL",
+         "LOCALE",
+         "INSTSIZE",
+         "CBSATYPE")) %>%
+  select(varName,
+         varOrder,
+         Codevalue,
+         valueLabel,
+         valueOrder,
+         Frequency,
+         Percent) %>%
+  arrange(varOrder,
+          valueOrder)
+
+# Extract and label variables needed for analysis from relevant tables
+# keep original tables as labelled objects for reference
+# note tip from CLewis to assign value labels, na, then variable labels: https://github.com/Cghlewis/data-wrangling-functions/wiki/Label-Data
+
+binary_label <- c("Yes" = 1,
+            "No" = 0,
+            "Not reported" = -1,
+            "Not applicable" = -2)
+
+institutions_raw <-  sqlFetch(IPEDSDatabase, "HD2022") %>%
+    set_variable_labels(.labels = dict_labels, .strict = FALSE) 
+
+institutions_cleaned <-  sqlFetch(IPEDSDatabase, "HD2022") %>%
+  select(UNITID, 
+         INSTNM,
+         OBEREG,
+         CONTROL,
+         HBCU,
+         HOSPITAL,
+         MEDICAL,
+         LOCALE,
+         INSTSIZE,
+         CBSATYPE,
+         C21SZSET,
+         C21BASIC
+         ) %>%
+  mutate(LOCALE_summary = case_when(
+    between(LOCALE, 11, 13) ~ "City",
+    between(LOCALE, 21, 23) ~ "Suburb",
+    between(LOCALE, 31, 33) ~ "Town",
+    between(LOCALE, 41, 43) ~ "Rural",
+    LOCALE == -3 ~ "Unknown")) %>%
+  mutate(TYPE = case_when(
+    between(C21SZSET, 1, 5) ~ "Two Year",
+    between(C21SZSET, 6, 17) ~ "Four Year",
+    C21SZSET == 18 ~ "Exclusively Grad",
+    C21SZSET == -2 ~ "Not Applicable"
+  )) %>%
+  mutate(across(c(MEDICAL,
+                  HOSPITAL,
+                  HBCU,
+                  ),
+                .fns = function(x) ifelse(x == 2,
+                                           0,
+                                           x))) %>%
+  set_value_labels(MEDICAL = binary_label, 
+                   HOSPITAL = binary_label,
+                   HBCU = binary_label) %>%
+  set_value_labels(INSTSIZE = c(
+                    "Under 1,000" = 1,
+                    "1,000 - 4,999" = 2,
+                    "5,000 - 9,999" = 3,
+                    "10,000 - 19,999" = 4,
+                    "20,000 and above" = 5,
+                    "Not reported" = -1,
+                    "Not applicable" = -2
+                    ),
+                  OBEREG = c(
+                    "U.S. Service schools" = 0,
+                    "New England" = 1,
+                    "Mid East" = 2,
+                    "Great Lakes" = 3,
+                    "Plains" = 4,
+                    "Southeast" = 5,
+                    "Southwest" = 6,
+                    "Rocky Mountains" = 7,
+                    "Far West" = 8,
+                    "Other U.S. jurisdictions" = 9
+                    ),
+                  CONTROL = c(
+                   "Public" = 1,
+                   "Private not-for-profit" = 2,
+                   "Private for-profit" = 3,
+                   "Not available" = -3
+                   ),
+                  CBSATYPE = c(
+                   "Metropolitan Statistical Area" = 1,
+                   "Micropolitan Statistical Area" = 2,
+                   "Not applicable" = -2,
+                   "Not available" = -3
+                   )
+  ) %>%
+    mutate(across(c(INSTSIZE, 
+                  CONTROL,
+                  HBCU,
+                  HOSPITAL,
+                  MEDICAL,
+                  CBSATYPE,
+                  C21SZSET,
+                  C21BASIC), 
+                ~ labelled_spss(.x, 
+                                labels = val_labels(.x),
+                                na_values = c(-3, -2, -1)))) %>%
+    set_variable_labels(.labels = dict_labels, .strict = FALSE)
+
+HR_raw <-  sqlFetch(IPEDSDatabase, "DRVHR2022") %>%
+  set_variable_labels(.labels = dict_labels, .strict = FALSE)
+
+prop_research <- sqlFetch(IPEDSDatabase, "DRVHR2022") %>%
+    select(UNITID,
+         SFTEINST,
+         SFTERSRC,
+         SFTEPBSV,
+         SFTELCAI,
+         SFTEMNGM,
+         SFTEBFO,
+         SFTECES,
+         SFTECLAM,
+         SFTEHLTH,
+         SFTEOTHR) %>%
+  pivot_longer(cols = -c(UNITID), names_to = 'varName') %>%
+  left_join(select(dictionary, c(varName, varTitle))) %>%
+  mutate(varTitle = str_remove(varTitle, " FTE")) %>%
+  group_by(UNITID) %>%
+  mutate(percent =  100 *value/sum(value)) %>%
+  ungroup() %>%
+  filter(varTitle == "Research") %>%
+  select(UNITID, percent)
+
+enrol_raw <- sqlFetch(IPEDSDatabase, "DRVEF2022") %>%
+    set_variable_labels(.labels = dict_labels, .strict = FALSE)
+
+data <- left_join(institutions_cleaned, 
+                  select(enrol_raw, UNITID, FTE)) %>%
+  left_join(prop_research) %>%
+  left_join(select(HR_raw, UNITID, SALTOTL)) %>%
+  filter(C21BASIC == 15)
+
+comparisons <- sqlFetch(IPEDSDatabase, "CUSTOMCGIDS2022") %>%
+    set_variable_labels(.labels = dict_labels, .strict = FALSE)
+
+# create list of comparison institutions
+
+custom_comparisons <- filter(comparisons, is.element(UNITID, params$focus))
+
+# create filter with ID numbers of focus and comparison institutions 
+
+temp <- custom_comparisons %>%
+  select(CGINSTNM, CGUNITID) %>%
+  rename(INSTNM = CGINSTNM,
+         UNITID = CGUNITID)
+
+# add ID number of focus institution
+
+focus <- data.frame(params$institution, params$focus)
+names(focus) <- c("INSTNM", "UNITID")
+selected <- rbind(temp, focus)
+
+odbcClose(IPEDSDatabase)
+
+```
+
+### Clean data to produce FTE data summary
+
+```{r}
+
+FTE_data_summary <- left_join(selected,
+                         HR_raw)  %>%
+  mutate(focus = as.factor(if_else(INSTNM == params$institution, 1, 0))) %>%
+  select(focus,
+         SFTEINST,
+         SFTERSRC,
+         SFTEPBSV,
+         SFTELCAI,
+         SFTEMNGM,
+         SFTEBFO,
+         SFTECES,
+         SFTECLAM,
+         SFTEHLTH,
+         SFTEOTHR,
+         SFTETOTL) %>%
+  group_by(focus) %>%
+  summarise(across(where(is.numeric), ~ median(.x, na.rm = TRUE))) %>%
+  ungroup() %>%
+  arrange(desc(focus)) %>%
+  pivot_longer(cols = -focus, names_to = 'varName') %>%
+  left_join(select(dictionary, c(varName, varTitle))) %>%
+  mutate(varTitle = str_remove(varTitle, " FTE"),
+         varTitle = recode(varTitle,
+                           "Librarians, Curators, and Archivists/Student and Academic Affairs and Other Education Services" = "Instructional Support Occupations",
+                           "Service, sales, office/admin support, natural resources, construction, maintenance, production, transportation & materials moving" = "Other"))
+
+```
+
+### Clean data to produce FTE working and FTE data detail
+
+```{r}
+FTE_working <- left_join(selected,
+                         HR_raw)  %>%
+  mutate(focus = as.factor(if_else(INSTNM == params$institution, 1, 0))) %>%
+  select(INSTNM,
+         focus,
+         SFTEINST,
+         SFTERSRC,
+         SFTEPBSV,
+         SFTELCAI,
+         SFTEMNGM,
+         SFTEBFO,
+         SFTECES,
+         SFTECLAM,
+         SFTEHLTH,
+         SFTEOTHR,
+         SFTETOTL) %>%
+  pivot_longer(cols = -c(focus, INSTNM), names_to = 'varName') %>%
+  left_join(select(dictionary, c(varName, varTitle))) %>%
+  mutate(varTitle = str_remove(varTitle, " FTE"),
+         varTitle = recode(varTitle,
+                           "Librarians, Curators, and Archivists/Student and Academic Affairs and Other Education Services" = "Instructional Support Occupations",
+                           "Service, sales, office/admin support, natural resources, construction, maintenance, production, transportation & materials moving" = "Other"))
+
+temp1 <- FTE_working %>%
+  filter(focus == 0) %>%
+  group_by(focus, varTitle) %>%
+  summarise(max = max(value), min = min(value), median = round(median(value), 0)) %>%
+  mutate(
+         # value = paste0(median, "\n", "(", min, "-", max, ")")) %>%
+         value = glue("{median} <br> ({min}-{max})")) %>%
+  select(focus, varTitle, value)
+
+FTE_data_detail <- FTE_working %>%
+  filter(focus == 1) %>%
+  mutate(value = as.character(value)) %>%
+  select(focus, varTitle, value) %>%
+  bind_rows(temp1)
+```
+
+### Clean data to produce salary data summary
+
+```{r}
+
+dictionary <- dictionary %>%
+  mutate(varName = toupper(varName))
+
+salary_data_summary <- left_join(selected,
+                         HR_raw)  %>%
+  mutate(focus = as.factor(if_else(INSTNM == params$institution, 1, 0))) %>%
+  select(focus,
+         SALTOTL,
+         SALPROF,
+         SALASSC,
+         SALASST,
+         SALINST,
+         SALLECT,
+         SALNRNK) %>%
+  group_by(focus) %>%
+  summarise(across(where(is.numeric), ~ median(.x, na.rm = TRUE))) %>%
+  ungroup() %>%
+  arrange(desc(focus)) %>%
+  pivot_longer(cols = -focus, names_to = 'varName') %>%
+  left_join(select(dictionary, c(varName, varTitle))) %>%
+  mutate(varTitle = str_to_title(str_remove(varTitle, "Average salary equated to 9 months of full-time instructional staff - ")))
+```
+
+## Table 1: Comparison group
+
+@tbl-comparison-group lists the custom comparison group chosen by `r params$institution`.
+
+```{r custom-comparisons}
+#| label: tbl-comparison-group
+#| tbl-cap: "Custom comparison group"
+
+custom_comparisons %>%
+  arrange(CGINSTNM) %>%
+  mutate(Location = paste0(CGCITY, "(", CGSTABBR, ")")) %>%
+  select(CGINSTNM, Location) %>%
+  gt() %>%
+  cols_label(CGINSTNM = "Institution Name")
+  
+```
+
+## Figure 1: Number of FTE staff by category
+
+@fig-FTE compares the number of full-time equivalent staff employed by `r params$institution` within each occupational category with the median number of full-time equivalent staff in that category employed by institutions included in the custom comparison group.
+
+```{r FTE}
+#| label: fig-FTE
+#| fig-cap: "Full-time equivalent staff, by occupational category: Fall 2022"
+
+FTE_data_summary %>%
+  filter(varName != "SFTETOTL") %>%
+  ggplot(mapping = aes(x = fct_relevel(varTitle,
+                                       "Instructional",
+                                       "Research",
+                                       "Public Service",
+                                       "Instructional Support Occupations",
+                                       "Management",
+                                       "Business and Financial Operations",
+                                       "Computer, Engineering, and Science",
+                                       "Community Service, Legal, Arts, and Media",
+                                       "Healthcare",
+                                       "Other"
+                                       ),
+                       y = value,
+                       label = scales::comma(round(value, digits = 0)),
+                       fill = focus,
+                       group = focus)) +
+        geom_bar(position =  position_dodge2(reverse=TRUE),
+                 stat = "identity") +
+        geom_text(position =  position_dodge2(reverse=TRUE, width = 1),
+                  stat = "identity",
+                  vjust = -1,
+                  size = 3)  +
+  scale_x_discrete(labels = label_wrap(8)) +
+  scale_y_continuous(label = comma,
+                     limits = c(0, 3500),
+                     breaks = seq(0, 3500, by = 500)) +
+  scale_fill_manual(name = "",
+                    values = c("#f4edda", "#007dba"), 
+                    labels = c("Comparison Group Median (N = 6)",
+                               params$institution),
+                    guide = guide_legend(reverse = TRUE)) +
+  labs(x = "Occupational category",
+       y = "Number of staff") +
+  theme_minimal() +
+  theme(legend.position="top",
+        panel.grid.major.x = element_blank()
+        )
+```
+
+## Table 2: Number and proportion of FTE staff by category
+
+```{r}
+
+FTE_percent <- FTE_working %>%
+  select(-c(varName)) %>%
+  filter(varTitle != "Total staff") %>%
+  group_by(INSTNM) %>%
+  mutate(percent =  round(100 *value/sum(value), 0)) %>%
+  group_by(focus, varTitle) %>%
+  summarise(max = max(percent), 
+            min = min(percent), 
+            median = round(median(percent), 0)) %>%
+  mutate(
+         # value = paste0(median, "\n", "(", min, "-", max, ")")) %>%
+         value = if_else(focus == 0, 
+                         glue("{median}% <br> ({min}-{max}%)"),
+                         glue("{median}%"))) %>%
+  select(focus, varTitle, value) %>%
+  pivot_wider(names_from = focus) %>%
+  rename(focus_percent = 3,
+         comparison_percent = 2)
+
+```
+
+@tbl-FTE-summary presents the number and proportion of full-time equivalent staff employed by `r params$institution` alongside the median and range of full-time equivalent staff employed by institutions included in the custom comparison group (by category). For even more granular comparisons, see @tbl-FTE-detail (in the Appendix to this report).
+
+```{r FTE-summary}
+#| label: tbl-FTE-summary
+#| tbl-cap: "Full-time equivalent staff, by occupational category: Fall 2022"
+
+FTE_data_detail %>%
+  select(varTitle, focus, value) %>%
+  pivot_wider(names_from = focus) %>%
+  left_join(FTE_percent, by = "varTitle") %>%
+  gt() %>%
+  cols_label(varTitle = "Category",
+             "1" = params$institution,
+             "0" = "Comparison Group Median and Range",
+             "focus_percent" = params$institution,
+             "comparison_percent" = "Comparison Group Median and Range") %>%
+  fmt_markdown(columns = TRUE) %>%
+  tab_spanner(
+    label = "Number of staff",
+    columns = c(2, 3)
+    ) %>%
+  tab_spanner(
+    label = "Proportion of staff",
+    columns = c(4, 5)
+    ) %>%
+  cols_move_to_end(comparison_percent) 
+
+
+```
+
+## Figure 2: Average salary outlays by academic rank
+
+@fig-salary compares the average salary of full-time non-medical instructional staff employed by `r params$institution` within each academic rank with the median salary of full-time equivalent staff of equivalent rank employed by institutions included in the custom comparison group.
+
+```{r salary}
+#| label: fig-salary
+#| fig-cap: "Average salary outlays of full-time non-medical instructional staff equated to 9-months worked, by academic rank: Academic year 2022-2023"
+
+salary_data_summary %>%
+  ggplot(mapping = aes(x = fct_rev(fct_relevel(varTitle,
+                                       "All Ranks",
+                                       "Professors",
+                                       "Associate Professors",
+                                       "Assistant Professors",
+                                       "Instructors",
+                                       "Lecturers",
+                                       "No Academic Rank"
+                                       )),
+                       y = value,
+                       label = scales::comma(round(value, digits = 0)),
+                       fill = focus,
+                       group = focus)) +
+        geom_bar(position =  position_dodge2(reverse=FALSE),
+                 stat = "identity") +
+  coord_flip() +
+  geom_text(position =  position_dodge2(reverse=FALSE, width = 1),
+                  stat = "identity",
+                  hjust = -1,
+                  size = 3)  +
+  scale_fill_manual(name = "",
+                    values = c("#f4edda", "#007dba"),
+                    labels = c("Comparison Group Median",
+                               params$institution),
+                    guide = guide_legend(reverse = TRUE)) +
+  scale_y_continuous(label = comma,
+                      limits = c(0, 300000),
+                      breaks = seq(0, 300000, by = 50000)) +
+  labs(x = "Academic rank",
+        y = "Average salary outlays") +
+  scale_x_discrete(labels = label_wrap(8)) +
+  theme_minimal() +
+  theme(legend.position="top",
+        panel.grid.major.y = element_blank(),
+        panel.grid.minor.y = element_blank()
+        )
+
+
+
+
+```
+
+### Predicting proportion of staff in research category and/or average salary for institutions with Carnegie Classification of '15'
+
+### Exploring labelled data
+
+```{r}
+reference <- labelled::generate_dictionary(data)
+
+```
+
+```{r}
+
+glimpse(data)
+
+data %>%
+  select(-INSTNM) %>%
+  sjPlot::view_df(show.type = TRUE, 
+                  show.labels = TRUE,
+                  show.string.values = TRUE,
+                  show.values = TRUE, 
+                  show.frq = TRUE,
+                  show.prc = TRUE,
+                  show.na = TRUE
+                  )
+
+```
+
+```{r}
+tabyl(institutions_raw$CONTROL)
+
+vtable::labeltable(institutions_raw$CONTROL, count = TRUE, percent = TRUE)
+```
+
+### We need to convert to factors to conduct regression with labelled data
+
+```{r}
+
+data <- data %>%
+    mutate_if(haven::is.labelled, haven::as_factor)
+
+
+```
+
+### What does percent research staff variable look like?
+
+It's less skewed after restricting to high research intensive
+
+```{r}
+data %>%
+  ggplot(aes(x = percent)) +
+  geom_boxplot()
+```
+
+### What does total average salary variable look like?
+
+```{r}
+data %>%
+  ggplot(aes(x = SALTOTL)) +
+  geom_boxplot()
+```
+
+```{r}
+
+research.lm <- lm(percent ~ INSTSIZE + OBEREG + MEDICAL + LOCALE_summary, data = data)
+
+
+research.lm
+
+round(summary(research.lm)$coef, 3)
+
+```
+
+```{r}
+salary.lm <- lm(SALTOTL ~ FTE + OBEREG + MEDICAL + LOCALE_summary, data = data)
+
+
+salary.lm
+
+round(summary(salary.lm)$coef, 3)
+```
+
+```{r}
+
+regression.var.names <- c("percent", "FTE", "LOCALE_summary", "CONTROL")
+
+ggpairs(data[,c(regression.var.names, "HOSPITAL")], axisLabels = "internal")
+
+```
+
+```{r}
+
+data %>%
+  ggplot(aes(x = percent, y = FTE, color = LOCALE_summary)) +
+  geom_point()
+
+```
+
+```{r}
+
+data %>%
+  group_by(OBEREG) %>%
+  summarise(mean = mean(percent, na.rm = TRUE)) %>%
+  ungroup() %>%
+  ggplot(aes(x = fct_reorder(OBEREG, mean, .desc = TRUE), y = mean)) +
+  geom_bar(stat = "identity")
+
+```
+
+# Appendix - additional how to guides
+
+## Loading data from csv or excel file
+
+```{r}
+
+instructional <- read.csv(here("data", "sal2022_is.csv"))
+dict <- read_excel(here("data", "sal2022_dict_is.xlsx"), sheet = "varlist")
+
+institutions <- read.csv(here("data", "hd2022.csv"))
+inst_dict <- read_excel(here("data", "hd2022_dict.xlsx"), sheet = "varlist")
+
+
+```
+
+## Attach labels to imported datafiles
+
+https://cghlewis.com/blog/dict_clean/
+
+Turn this into a function
+
+```{r}
+
+dict_labels <- dict %>%
+  select(varname, varTitle) %>%
+  deframe() %>%
+  as.list()
+
+instructional <- instructional %>%
+  set_variable_labels(.labels = dict_labels, .strict = FALSE)
+
+inst_dict_labels <- inst_dict %>%
+  select(varname, varTitle) %>%
+  deframe() %>%
+  as.list()
+
+institutions <- institutions %>%
+  set_variable_labels(.labels = inst_dict_labels, .strict = FALSE)
+
+```
+
+### Attempt to apply labels as function - unsuccessful
+
+```{r}
+# create function to assign labels for a single variable
+# 
+# assign.value.labels <- function(x) {
+# 
+# temp_value_labels <-  sqlFetch(IPEDSDatabase, "valuesets22") %>%
+#   filter(TableName == "HD2022",
+#          varName == x) %>%
+#   mutate(Codevalue = as.numeric(Codevalue)) %>%
+#   dplyr::select(valueLabel,
+#          Codevalue) %>%
+#   tibble::deframe()
+# 
+# print(temp_value_labels) 
+# 
+# institutions_raw <- institutions_raw %>%
+#   set_value_labels(x, temp_value_labels, .strict = FALSE)
+# }
+
+# institutions_raw$x <- set_value_labels(institutions_raw$x, temp_value_labels)
+
+# assign.value.labels("LOCALE")
+
+# institutions_raw <- institutions_raw %>%
+#    set_value_labels(as.name(x) = temp_value_labels))
+
+
+#this didn't work
+
+# names_col <- c("HBCU", "LOCALE", "CONTROL", "INSTSIZE")
+# 
+# assign.value.labels(names_col)
+
+
+```
+
+### Older work
+
+```{r}
+# test <- institutions_raw %>%
+  # set_value_labels(CONTROL = value_labels)
+```
+
+## Original options for applying value labels
+
+```{r}
+# original options for applying value labels, involving manual specification
+# ERROR: Can't convert 'labels' <character> to match type of `x' <integer> was caused by speechmarks around Codevalue, which could be amended when we tweaked Crystal's code to extract Codevaule as numeric
+# 
+# institutions_raw$CONTROL <- set_value_labels(institutions_raw$CONTROL,
+#                    "Public" = 1, 
+#                    "Private not-for-profit" = 2,
+#                    "Private for-profit" = 3,
+#                    "Not available" = -3)
+# 
+# glimpse(institutions_raw$CONTROL)
+# 
+# test <- institutions_raw %>%
+#   set_value_labels(CONTROL = c(
+#                    "Public" = 1,
+#                    "Private not-for-profit" = 2,
+#                    "Private for-profit" = 3,
+#                    "Not available" = -3))
+# 
+# glimpse(test$CONTROL)
+
+```
+
+### Can we assign value labels via a function - not yet!
+
+```{r}
+# 
+# assign.value.labels <- function(x) {
+#   
+#   # a vector of variables to loop over
+#   
+#   variables <- x
+#   
+#   # loop over each variable name provided to function
+#   for (i in seq_along(variables)) {
+# 
+#   # create value_labels for each variable
+#     
+#   nam <- paste0("value_labels_", variables[[i]])) 
+# 
+# 
+# assign(nam, 1:i) <- sqlFetch(IPEDSDatabase, "valuesets22") %>%
+#   filter(TableName == "HD2022",
+#          varName %in% c(variables[[i]])) %>%
+#   mutate(Codevalue = as.numeric(Codevalue)) %>%
+#   dplyr::select(valueLabel,
+#          Codevalue) %>%
+#   tibble::deframe() }
+#   }
+# 
+# variables <- c("CONTROL", "OBEREG")
+# 
+# assign.value.labels(variables)
+
+# test <- institutions_raw %>%
+#   set_value_labels(CONTROL = value_labels)
+  
+```
+
+## Explore data after import
+
+https://cghlewis.github.io/data-wrangling-functions/labelling-data/add-value-labels-dictionary.html
+
+```{r}
+
+```
+
+```{r}
+# 
+# institutions_raw <- institutions_raw %>%
+#   mutate(OBEREG = as.character(OBEREG),
+#          CONTROL = as.character(CONTROL))
+# 
+# labelled::val_label(institutions_raw) <- list(OBEREG = c("U.S. Service schools" = 0,
+#                                                 "New England" = 1,
+#                                                 "Mid East" = 2,
+#                                                 "Great Lakes" = 3,
+#                                                 "Plains" = 4,
+#                                                 "Southeast" = 5,
+#                                                 "Southwest" = 6,
+#                                                 "Rocky Mountains" = 7,
+#                                                 "Far West" = 8,
+#                                                 "Other U.S. jurisdictions" = 9),
+#                                      CONTROL = c("Public" = 1,
+#                                                  "Private not-for-profit" = 2,
+#                                                  "Private for-profit" = 3,
+#                                                  "Not available" = -3))
+# 
+# 
+
+```
+
+# Appendix - additional reference tables
+
+## Table showing FTE staff by category (`r params$institution` vs median of comparison group)
+
+@tbl-FTE shows ...
+
+```{r}
+#| label: tbl-FTE
+#| tbl-cap: "FTE staff by category"
+
+FTE_data_summary %>%
+  select(varTitle, focus, value) %>%
+  pivot_wider(names_from = focus) %>%
+  gt() %>%
+  cols_label(varTitle = "Category", 
+             "1" = params$institution, 
+             "0" = "Comparison Group Median (N = 6)") %>%
+  fmt_number(decimals = 0)
+
+```
+
+### Number and proportion of FTE staff by category and institution
+
+@tbl-FTE-detail compares the number and proportion of full-time equivalent staff employed by \`r params\$institution' within each occupational category with the number and proportion of FTE staff employed by each institution in the custom comparison group.
+
+```{r percentages}
+#| label: tbl-FTE-detail
+#| tbl-cap: "Full-time equivalent staff, by occupational category, Fall 2022"
+
+FTE_working %>%
+  select(-c(focus, varName)) %>%
+  filter(varTitle != "Total staff") %>%
+  group_by(INSTNM) %>%
+  mutate(percent =  round(100 *value/sum(value)), 0) %>%
+  ungroup() %>%
+  mutate(summary = paste0(value, " (", round(percent, 0), "%)"),
+         estimate = glue("{value} <br> ({percent}%)")) %>%
+  select(INSTNM, varTitle, estimate) %>%
+  arrange(INSTNM) %>%
+  pivot_wider(names_from = "INSTNM", values_from = estimate) %>%
+  gt() %>%
+  cols_label(varTitle = "Category") %>%
+  cols_move(
+    columns = params$institution,
+    after = varTitle) %>%
+    fmt_markdown(columns = TRUE)
+
+```
+
+Attempt to reproduce:
+
+Figure 23. Average salaries of full-time instructional non-medical staff equated to 9-months worked, by academic rank: Academic year 2020-21/
+
+Figure 27. Average salary outlays of full-time non-medical instructional staff equated to 9-months worked, by academic rank: Academic year 2022-23
+
+This report is based on data supplied by institutions to IPEDS during 2020-21 data collection year
+
+Staff FTE Staff The full-time-equivalent (FTE) by occupational category is calculated by summing the total number of full-time staff and adding one-third of the total number of part-time staff. Occupational categories include instructional staff, research staff, public service staff, instructional support staff, management staff, and other occupations. Instructional staff are primarily engaged in teaching and do a combination of teaching, research, and/or public service. Research staff are staff whose primary function is research while public service staff are staff whose primary function is public service. Instructional support occupations include archivists, curators, and museum technicians; librarians and media collections specialists; librarian technicians; student and academic affairs and other education services occupations. Other staff include staff in service occupations; sales and related occupations; office and administrative support occupations; natural resources, construction, and maintenance occupations; production, transportation and material moving occupations; and military specific occupations. Graduate assistants are not included. Equated Instructional Non-Medical Staff Salaries Institutions reported the number of full-time nonmedical instructional staff and their salary outlays by academic rank, gender, and the number of months worked (9-, 10-, 11-, and 12-months). Salary outlays for staff who worked 10-, 11-, and 12-months were equated to 9-months of work by multiplying the outlays reported for 10-months by 0.90, the outlays reported for 11 months by 0.818, and the outlays reported for 12- months by 0.75. The equated 10-, 11-, and 12-outlays were then added to the outlays for instructional staff that worked 9-months to generate a total 9-month equated salary outlay. The total 9-month equated outlay was then divided by total number of instructional non-medical staff to determine an equated 9-month average salary. This calculation was done for each academic rank. Salary outlays were not reported for staff that work less than 9-months and were excluded. Student-to-Faculty Ratio Institutions can provide their institution’s student-to-faculty ratio (i.e., student-to-instructional staff) for undergraduate programs or follow the NCES guidance in calculating their student-to-faculty ratio, which is as follows: the number of FTE students (using Fall Enrollment survey data) divided by total FTE instructional staff (using the total Primarily instruction + Instruction/research/public service staff reported in Human Resources component and adding any not primarily instructional staff that are teaching a credit course). For this calculation, FTE for students is equal to the number of the full-time students plus one-third the number of part-time students; FTE for instructional staff is similarly calculated. Students in "stand-alone" graduate or professional programs (such as, medicine, law, veterinary, dentistry, social work, or public health) and instructional staff teaching in these programs are excluded from the FTE calculations.
+
+## References
+
+<https://cghlewis.com/blog/dict_clean/>
+
+<https://github.com/Cghlewis/data-wrangling-functions/wiki/Label-Data>
+
+<https://rpubs.com/IPEDS/Data_Pull>
+
+<https://www.pipinghotdata.com/posts/2020-12-23-leveraging-labelled-data-in-r/>
+
+<https://www.sfu.ca/~mjbrydon/tutorials/BAinR/filter.html#import-data> (filtering)
